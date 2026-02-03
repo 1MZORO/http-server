@@ -6,6 +6,7 @@ import (
 	"io"
 	"strings"
 )
+type parserState string 
 
 type RequestLine struct {
 	HttpVersion   string
@@ -15,7 +16,12 @@ type RequestLine struct {
 
 type Request struct {
 	RequestLine RequestLine
-}
+	state parserState
+} 
+	const (
+		StateInit parserState = "init"
+		StateDone parserState = "done"
+	)
 
 var ERROR_REQUEST_LINE = fmt.Errorf("melformed request-line")
 var ERROR_UNSUPPORTED_HTTP_VERSION = fmt.Errorf("unsupported http-version")
@@ -54,6 +60,8 @@ func parseRequestLine(b string)(*RequestLine, string, error){
 
 func RequestFromReader(reader io.Reader) (*Request, error){
 
+	// request := &Request{}
+	 
 	data , err := io.ReadAll(reader)
 	if err != nil {
 		return nil,errors.Join(fmt.Errorf("unable to io.ReadAll()"),err)
@@ -66,7 +74,10 @@ func RequestFromReader(reader io.Reader) (*Request, error){
 	if err != nil {
 		return  nil,err
 	}
+	if rl == nil {
+		return nil, ERROR_REQUEST_LINE
+	}
 	return &Request{
 		RequestLine: *rl, 
-	},err 
+	},nil 
 }
