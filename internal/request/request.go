@@ -3,6 +3,7 @@ package request
 import (
 	"bytes"
 	"fmt"
+	"http-server/internal/headers"
 	"io"
 )
 
@@ -16,11 +17,13 @@ type RequestLine struct {
 
 type Request struct {
 	RequestLine RequestLine
+	Header *headers.Headers
 	state       parserState
 }
 
 const (
 	StateInit  parserState = "init"
+	StateHeader  parserState = "header"
 	StateDone  parserState = "done"
 	StateError parserState = "error"
 )
@@ -33,6 +36,7 @@ var SEPARATOR = []byte("\r\n")
 func newRequest() *Request {
 	return &Request{
 		state: StateInit,
+		Header: headers.NewHeader(),
 	}
 }
 
@@ -40,11 +44,12 @@ func (r *Request) parse(data []byte) (int, error) {
 	read := 0
 outer:
 	for {
+		currentData := data[ read:]
 		switch r.state {
 		case StateError:
 			return 0,ERROR_REQUEST_IN_ERROR_STATE
 		case StateInit:
-			rl, n, err := parseRequestLine(data[read:])
+			rl, n, err := parseRequestLine(currentData)
 			if err != nil {
 				r.state = StateError
 				return 0, err
@@ -54,9 +59,28 @@ outer:
 			}
 			r.RequestLine = *rl
 			read += n
-			r.state = StateDone
+			r.state = StateHeader
+		case StateHeader:
+			n,done,err := r.Header.Parse(currentData)
+			
+			if err != nil {
+				r.state = StateError
+				return 0, err
+			}
+			if n == 0 {
+				break outer
+			}
+
+			read += n
+
+			if done {
+				r.state = StateDone
+			}
+
 		case StateDone:
 			break outer
+		default:
+			panic("State Default called!!!")
 		}
 	}
 	return read, nil
@@ -99,29 +123,33 @@ func parseRequestLine(b []byte) (*RequestLine, int, error) {
 	return rl, read, nil
 
 }
-
 func RequestFromReader(reader io.Reader) (*Request, error) {
-
 	request := newRequest()
 
 	buf := make([]byte, 1024)
 	bufLen := 0
-	for !request.done() && !request.error(){
+
+	for !request.done() && !request.error() {
 		n, err := reader.Read(buf[bufLen:])
-		if err != nil {
+		if err != nil && err != io.EOF {
 			return nil, err
 		}
-		bufLen += n
-		readN, err := request.parse(buf[:bufLen])
 
+		if n == 0 && err == io.EOF {
+			break
+		}
+
+		bufLen += n
+
+		readN, err := request.parse(buf[:bufLen])
 		if err != nil {
 			return nil, err
 		}
 
 		copy(buf, buf[readN:bufLen])
 		bufLen -= readN
-
 	}
 
 	return request, nil
 }
+
