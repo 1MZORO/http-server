@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"http-server/internal/headers"
 	"io"
+	"strconv"
 )
 
 type parserState string
@@ -17,37 +18,58 @@ type RequestLine struct {
 
 type Request struct {
 	RequestLine RequestLine
-	Header *headers.Headers
+	Header      *headers.Headers
+	Body        string
 	state       parserState
 }
 
 const (
-	StateInit  parserState = "init"
-	StateHeader  parserState = "header"
-	StateDone  parserState = "done"
-	StateError parserState = "error"
+	StateInit   parserState = "init"
+	StateHeader parserState = "header"
+	StateBody   parserState = "body"
+	StateDone   parserState = "done"
+	StateError  parserState = "error"
 )
 
 var ERROR_REQUEST_LINE = fmt.Errorf("melformed request-line")
 var ERROR_UNSUPPORTED_HTTP_VERSION = fmt.Errorf("unsupported http-version")
-var ERROR_REQUEST_IN_ERROR_STATE =  fmt.Errorf("request in error state")
+var ERROR_REQUEST_IN_ERROR_STATE = fmt.Errorf("request in error state")
 var SEPARATOR = []byte("\r\n")
 
 func newRequest() *Request {
 	return &Request{
-		state: StateInit,
+		state:  StateInit,
 		Header: headers.NewHeader(),
+		Body:   "",
 	}
+}
+
+func getInt(header *headers.Headers, name string, defaultValue int) int {
+	valueStr, exits := header.Get(name)
+
+	if !exits {
+		return defaultValue
+	}
+	value, err := strconv.Atoi(valueStr)
+
+	if err != nil {
+		return defaultValue
+	}
+
+	return value
 }
 
 func (r *Request) parse(data []byte) (int, error) {
 	read := 0
 outer:
 	for {
-		currentData := data[ read:]
+		currentData := data[read:]
+		if len(currentData) == 0 {
+			break outer
+		}
 		switch r.state {
 		case StateError:
-			return 0,ERROR_REQUEST_IN_ERROR_STATE
+			return 0, ERROR_REQUEST_IN_ERROR_STATE
 		case StateInit:
 			rl, n, err := parseRequestLine(currentData)
 			if err != nil {
@@ -61,19 +83,43 @@ outer:
 			read += n
 			r.state = StateHeader
 		case StateHeader:
-			n,done,err := r.Header.Parse(currentData)
-			
+			n, _, err := r.Header.Parse(currentData)
+
 			if err != nil {
 				r.state = StateError
 				return 0, err
 			}
+
 			if n == 0 {
+				// Check if we're at the blank line separator
+				if len(currentData) >= 2 && bytes.HasPrefix(currentData, SEPARATOR) {
+					read += 2
+					length := getInt(r.Header, "content-length", 0)
+					if length == 0 {
+						r.state = StateDone
+					} else {
+						r.state = StateBody
+					}
+				} else {
+					break outer
+				}
+			} else {
+				read += n
+			}
+
+		case StateBody:
+			length := getInt(r.Header, "content-length", 0)
+
+			if length == 0 {
+				r.state = StateDone
 				break outer
 			}
 
-			read += n
+			remaining := min(length-len(r.Body), len(currentData))
+			r.Body += string(currentData[:remaining])
+			read += remaining
 
-			if done {
+			if len(r.Body) == length {
 				r.state = StateDone
 			}
 
@@ -150,6 +196,9 @@ func RequestFromReader(reader io.Reader) (*Request, error) {
 		bufLen -= readN
 	}
 
+	if request.state == StateBody {
+		return nil, fmt.Errorf("unexpected EOF while reading body")
+	}
+
 	return request, nil
 }
-
